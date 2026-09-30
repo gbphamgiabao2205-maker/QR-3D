@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ICQR – QR code thành cây 3D</title>
+<style>
+:root{--bg:#f6f4ee;--fg:#2b2a26;--card:#fff;--line:#ddd8cb;--acc:#b98a4a;--mut:#8a8677;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1b18;--fg:#f1eee6;--card:#2a2925;--line:#403e37;--mut:#9b9788}}
+:root[data-theme="dark"]{--bg:#1c1b18;--fg:#f1eee6;--card:#2a2925;--line:#403e37;--mut:#9b9788}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;max-width:480px;margin:0 auto;padding:0 14px 12px;box-sizing:border-box}
+h1{margin:10px 0 0;text-align:center;font:900 46px/1 ui-monospace,Menlo,monospace;letter-spacing:4px;color:transparent;background:radial-gradient(circle,var(--fg) 45%,transparent 50%) 0 0/5px 5px;-webkit-background-clip:text;background-clip:text}
+#c{flex:1;min-height:0;position:relative;touch-action:none;cursor:pointer}
+#c canvas{position:absolute;inset:0;width:100%;height:100%}
+#hint{align-self:center;font-size:13px;padding:6px 16px;border:1px solid var(--line);border-radius:99px;color:var(--mut);margin-bottom:12px}
+#hint.err{color:#c0453a}
+.row{display:flex;gap:10px}
+input{flex:1;min-width:0;font:inherit;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--fg)}
+button{font:inherit;border:0;color:var(--fg);background:transparent;cursor:pointer}
+#share{width:52px;border-radius:14px;background:var(--acc);color:#fff;font-size:20px}
+#tabs{display:flex;margin:10px 0}
+#tabs button{flex:1;padding:12px 0;border-radius:12px;color:var(--mut)}
+#tabs button.on{background:var(--card);color:var(--fg);font-weight:600}
+#sw{display:flex;justify-content:center;gap:14px;height:30px}
+#sw i{width:28px;height:28px;border-radius:50%;cursor:pointer;box-sizing:border-box}
+#sw i.on{outline:2px solid var(--fg);outline-offset:2px}
+</style>
+</head>
+<body>
+<h1>ICQR</h1>
+<div id="c"></div>
+<div id="hint">Drag to rotate · tap for QR</div>
+<div class="row"><input id="url" value="https://github.com/gbphamgiabao2205-maker" inputmode="url" autocapitalize="off"><button id="share" aria-label="Chia sẻ">↑</button></div>
+<div id="tabs"><button data-s="spring" class="on">✿ Spring</button><button data-s="summer">☀ Summer</button><button data-s="autumn">🍂 Autumn</button></div>
+<div id="sw"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>
+/* ===== 1. Cấu hình màu theo mùa ===== */
+const SEASON={spring:['#f2b6c6','#b79ad6','#e0664a','#e3bf3f','#7c9be0','#e8edf5'],summer:['#86bb52'],autumn:['#e59a35']};
+let season='spring',ci=0,qrMode=false,target=0,e=0,n=29,qr,leaves=[],dark=[];
+
+/* ===== 2. Khởi tạo three.js: camera trực giao (góc isometric) ===== */
+const wrap=document.getElementById('c');
+const R=new THREE.WebGLRenderer({antialias:true,alpha:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));wrap.appendChild(R.domElement);
+const sc=new THREE.Scene(),cam=new THREE.OrthographicCamera(-1,1,1,-1,.1,300);
+sc.add(new THREE.HemisphereLight(0xffffff,0x9a9080,.95));
+const dl=new THREE.DirectionalLight(0xffffff,.7);dl.position.set(-6,12,8);sc.add(dl);
+const grp=new THREE.Group();sc.add(grp);
+const box=new THREE.BoxGeometry(1,1,1),D=new THREE.Object3D();
+
+let yaw=Math.PI/4,pitch=.55,zoom=1,vy=0,drag=false,LM,FM,falls=[],lin=0,grow=0,cfade=0,tc,treeG,TR,last=0,bt;
+function frame(){ // yaw/pitch do người dùng kéo; e đưa pitch về nhìn thẳng từ trên xuống
+  const w=wrap.clientWidth,h=wrap.clientHeight,k=w/h,hw=n*(.8-.2*e)/zoom;
+  cam.left=-hw;cam.right=hw;cam.top=hw/k;cam.bottom=-hw/k;cam.updateProjectionMatrix();
+  const p=pitch+(1.52-pitch)*e,d=n*2.4;
+  cam.position.set(Math.sin(yaw)*Math.cos(p)*d,Math.sin(p)*d,Math.cos(yaw)*Math.cos(p)*d);
+  cam.lookAt(0,3*(1-e),0);
+}
+function resize(){R.setSize(wrap.clientWidth,wrap.clientHeight,false);frame()}
+addEventListener('resize',resize);
+
+/* ===== 3. Random có seed để cây luôn ra cùng một hình ===== */
+function rng(s){return()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+/* ===== 4. Dựng cảnh từ URL: nền = QR, thân, tán lá ===== */
+function inst(count,color){const m=new THREE.InstancedMesh(box,new THREE.MeshLambertMaterial({color:0xffffff}),count);grp.add(m);return m}
+function build(url){
+  grp.clear();D.rotation.set(0,0,0);qrcode.stringToBytes=qrcode.stringToBytesFuncs['UTF-8'];qr=qrcode(0,'M');qr.addData(url);qr.make();n=qr.getModuleCount();
+  // nền: mỗi module QR là một khối, sáng cao hơn tối; 3 góc định vị = cỏ
+  const g=inst(n*n+1),c=new THREE.Color();dark=[];let i=0;
+  const finder=(x,y)=>(x<8&&y<8)||(x>n-9&&y<8)||(x<8&&y>n-9);
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+    const d=qr.isDark(y,x),h=d?.6:1;
+    D.position.set(x-n/2+.5,h/2,y-n/2+.5);D.scale.set(1,h,1);D.updateMatrix();g.setMatrixAt(i,D.matrix);
+    g.setColorAt(i++,c.set(finder(x,y)?(d?'#8fb85a':'#dfe8c8'):(d?'#b7b6b0':'#f0efea')));
+    if(d&&!finder(x,y))dark.push([x-n/2+.5,y-n/2+.5]);
+  }
+  D.position.set(0,-.25,0);D.scale.set(n+1,.5,n+1);D.updateMatrix();g.setMatrixAt(i,D.matrix);g.setColorAt(i,c.set('#a9a8a2'));
+  // thân cong nhẹ, rễ, cành ngẫu nhiên
+  const H=Math.round(n*.3),r=rng(url.length*7+n),tr=inst(700),wood=['#6f5236','#7a5a3c','#87663f'];let t=0;
+  const cube=(x,y,z,sz,col)=>{D.position.set(x,y,z);D.rotation.set(0,0,0);D.scale.setScalar(sz);D.updateMatrix();tr.setMatrixAt(t,D.matrix);tr.setColorAt(t++,c.set(col))};
+  let bx=0,bz=0;
+  for(let y=0;y<H;y++){bx+=(r()-.5)*.25;bz+=(r()-.5)*.25;cube(bx,.6+y*.75,bz,1.15-.55*y/H,wood[y%3])}
+  for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]])cube(dx*.8,.35,dz*.8,.6,wood[0]);
+  const topY=.6+H*.75,tips=[];
+  for(let k=0;k<9;k++){
+    const a=r()*6.283,up=.5+r()*.5,len=Math.round(n*(.12+r()*.1)*2.2);let x=bx,y=topY-r()*H*.3,z=bz;
+    for(let i=0;i<len;i++){x+=Math.cos(a)*.45;z+=Math.sin(a)*.45;y+=up*.4;cube(x,y,z,.55-.25*i/len,wood[i%3])}
+    tips.push([x,y,z]);
+  }
+  tr.count=t;
+  // tán lá: nhiều cụm (mỗi cành một cụm), lá nhỏ hình mảnh, xoay ngẫu nhiên, có khoảng hở
+  const blobs=tips.map(q=>[q[0],q[1]+1.5,q[2],n*(.11+r()*.05)]);
+  blobs.push([bx,topY+n*.12,bz,n*.17],[bx,topY+n*.2,bz,n*.13]);
+  const cnt=Math.max(5500,dark.length+3500);leaves=[];
+  while(leaves.length<cnt){
+    const b=blobs[(r()*blobs.length)|0],u=r()*2-1,th=r()*6.283,rr=b[3]*Math.cbrt(r()),sq=Math.sqrt(1-u*u);
+    const x=b[0]+rr*sq*Math.cos(th),y=b[1]+rr*u*.8,z=b[2]+rr*sq*Math.sin(th);
+    if(y<topY-1||r()<.12)continue;
+    leaves.push({h:[x,y,z],sz:.3+r()*.22,rx:r()*3,ry:r()*3,v:.82+r()*.3+Math.min(.2,(y-topY)/n*.5),hue:(r()-.5)*.05,alt:r()<.15,q:dark[leaves.length]||null,d:Math.min(1,Math.hypot(x,z)/(n*.4)*.6+r()*.4),sw:(r()<.5?-1:1)*(.6+r()*.9),lift:2+r()*5,g:Math.min(1,Math.max(0,(y-topY+2)/(n*.35)))*.8+r()*.2});
+  }
+  LM=inst(cnt);treeG=new THREE.Group();grp.add(treeG);treeG.add(tr,LM);TR=tr;grow=0;
+  FM=inst(40);falls=[];for(let i=0;i<40;i++)falls.push({x:(r()*2-1)*n*.4,y:1.2+r()*n*.5,z:(r()*2-1)*n*.4,sp:.02+r()*.03,ph:r()*6.28});
+  paint();update();frame();
+}
+
+/* ===== 5. Tô màu (đổi sắc độ theo từng lá), animation, vòng lặp ===== */
+const ALT={spring:.03,summer:-.05,autumn:-.04};
+const cl=x=>Math.min(1,Math.max(0,x)),ease=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+function paint(anim){ // anim=true: màu chuyển mượt thay vì đổi ngay
+  const base=new THREE.Color(SEASON[season][ci]||SEASON[season][0]),c=new THREE.Color(),hsl={};
+  if(!tc||tc.length!==leaves.length*3)tc=new Float32Array(leaves.length*3);
+  leaves.forEach((l,i)=>{
+    c.copy(base).getHSL(hsl);
+    if(qrMode)c.setHSL(hsl.h,hsl.s,Math.min(hsl.l,.42)); // tối lại để dễ quét QR
+    else c.setHSL((hsl.h+l.hue+(l.alt?ALT[season]:0)+1)%1,hsl.s,Math.min(.95,hsl.l*l.v));
+    tc[i*3]=c.r;tc[i*3+1]=c.g;tc[i*3+2]=c.b});
+  if(!LM.instanceColor)LM.setColorAt(0,c);
+  if(anim)cfade=36;else{LM.instanceColor.array.set(tc);LM.instanceColor.needsUpdate=true}
+  falls.forEach((f,i)=>FM.setColorAt(i,c.copy(base)));FM.instanceColor.needsUpdate=true;
+}
+function update(){
+  TR.scale.y=1-Math.pow(1-cl(grow*2.2),3); // thân mọc lên trước
+  leaves.forEach((l,i)=>{
+    const s=ease(cl((lin-l.d*.45)/.55)),k=1-s,q=l.q,g=q?1:0; // mỗi lá có độ trễ riêng
+    let gm=cl((grow*1.5-l.g)/.5);gm=gm*gm*(3-2*gm);           // lá nảy dần từ dưới lên
+    const px=l.h[0]+((q?q[0]:l.h[0])-l.h[0])*s,py=l.h[1]+((q?2.05:l.h[1])-l.h[1])*s,pz=l.h[2]+((q?q[1]:l.h[2])-l.h[2])*s;
+    const w=Math.sin(Math.PI*s),a=w*l.sw,ca=Math.cos(a),sa=Math.sin(a); // đường bay cong + xoáy
+    D.position.set(px*ca-pz*sa,py+w*l.lift,px*sa+pz*ca);
+    D.rotation.set(l.rx*k+w*2.5,l.ry*k,0);
+    const sx=Math.max(.001,(l.sz+(g-l.sz)*s)*gm),sy=Math.max(.001,(l.sz*.5+(g-l.sz*.5)*s)*gm);
+    D.scale.set(sx,sy,sx);D.updateMatrix();LM.setMatrixAt(i,D.matrix)});
+  LM.instanceMatrix.needsUpdate=true;
+}
+function drift(t){ // lá rơi nhẹ
+  if(!FM)return;t=(t||0)/1000;const hide=e>.5;
+  falls.forEach((f,i)=>{f.y-=f.sp;if(f.y<1.2)f.y=n*.55;
+    D.position.set(f.x+Math.sin(t*1.3+f.ph)*1.2,f.y,f.z+Math.cos(t+f.ph)*1.2);
+    D.rotation.set(t+f.ph,t*1.5,0);D.scale.setScalar(hide?.001:.28);D.updateMatrix();FM.setMatrixAt(i,D.matrix)});
+  FM.instanceMatrix.needsUpdate=true;
+}
+(function loop(t){requestAnimationFrame(loop);
+  const dt=Math.min(.05,((t||0)-last)/1000||0);last=t||0;const tt=last/1000;
+  if(!drag&&!qrMode&&Math.abs(vy)>.0002){yaw+=vy*dt*60;vy*=Math.pow(.94,dt*60);frame()} // quán tính khi thả tay
+  if(qrMode){const g=Math.round(yaw/6.2832)*6.2832;if(Math.abs(g-yaw)>.001){yaw+=(g-yaw)*Math.min(1,dt*6);frame()}} // QR tự xoay thẳng
+  if(TR&&(lin!==target||grow<1)){ // tiến độ tuyến tính theo thời gian, easing nằm trong update()
+    lin=target>lin?Math.min(target,lin+dt/1.8):Math.max(target,lin-dt/1.8);grow=Math.min(1,grow+dt/2);
+    e=ease(lin);update();frame()}
+  if(cfade>0&&LM&&LM.instanceColor){const a=LM.instanceColor.array,f=--cfade?.16:1;for(let i=0;i<tc.length;i++)a[i]+=(tc[i]-a[i])*f;LM.instanceColor.needsUpdate=true}
+  if(treeG)treeG.rotation.set(Math.sin(tt*.8)*.01*(1-e),0,Math.sin(tt*.6+1)*.012*(1-e)); // gió đung đưa
+  drift(t);R.render(sc,cam)})();
+
+/* ===== 6. Giao diện: chạm cây, nhập URL, mùa, màu, chia sẻ ===== */
+const hint=document.getElementById('hint'),inp=document.getElementById('url'),sw=document.getElementById('sw');
+const norm=u=>{u=u.trim();if(/^https?:\/\/\S+\.\S+/i.test(u))return u;if(/^[^\s@\/]+\.[a-z]{2,}(\/\S*)?$/i.test(u))return 'https://'+u;return ''};
+function setHint(){hint.className='';hint.textContent=qrMode?'Tap to see the tree':'Drag to rotate · tap for QR'}
+const pts=new Map();let moved=0;
+wrap.addEventListener('pointerdown',ev=>{wrap.setPointerCapture(ev.pointerId);pts.set(ev.pointerId,[ev.clientX,ev.clientY]);if(pts.size===1)moved=0;drag=true;vy=0});
+wrap.addEventListener('pointermove',ev=>{
+  const p=pts.get(ev.pointerId);if(!p)return;
+  if(pts.size===2){const o=[...pts.entries()].find(([id])=>id!==ev.pointerId)[1],d0=Math.hypot(p[0]-o[0],p[1]-o[1]);
+    p[0]=ev.clientX;p[1]=ev.clientY;zoom=Math.min(2.5,Math.max(.7,zoom*Math.hypot(p[0]-o[0],p[1]-o[1])/d0));moved=99;frame();return}
+  const dx=ev.clientX-p[0],dy=ev.clientY-p[1];p[0]=ev.clientX;p[1]=ev.clientY;moved+=Math.abs(dx)+Math.abs(dy);
+  if(moved>6&&!qrMode){yaw-=dx*.008;vy=-dx*.008;pitch=Math.min(1.2,Math.max(.15,pitch+dy*.005));frame()}});
+wrap.addEventListener('pointerup',ev=>{if(!pts.delete(ev.pointerId))return;drag=pts.size>0;
+  if(moved<6&&!pts.size){qrMode=!qrMode;target=qrMode?1:0;paint(true);setHint();navigator.vibrate&&navigator.vibrate(8)}});
+wrap.addEventListener('pointercancel',ev=>{pts.delete(ev.pointerId);drag=pts.size>0});
+wrap.addEventListener('wheel',ev=>{ev.preventDefault();zoom=Math.min(2.5,Math.max(.7,zoom*(1-ev.deltaY*.001)));frame()},{passive:false});
+inp.addEventListener('input',()=>{
+  if(norm(inp.value)){clearTimeout(bt);bt=setTimeout(()=>{build(norm(inp.value));setHint()},400)}
+  else{hint.className='err';hint.textContent='Please enter a valid URL'}
+});
+function swatches(){
+  sw.innerHTML='';if(season!=='spring')return;
+  SEASON.spring.forEach((col,i)=>{const d=document.createElement('i');d.style.background=col;d.className=i===ci?'on':'';
+    d.onclick=()=>{ci=i;paint(true);swatches()};sw.appendChild(d)});
+}
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  season=b.dataset.s;ci=0;paint(true);swatches()});
+document.getElementById('share').onclick=async()=>{
+  const u=norm(inp.value)||inp.value.trim();try{if(navigator.share)await navigator.share({url:u});else{await navigator.clipboard.writeText(u);hint.textContent='Đã copy link'}}catch(_){}};
+
+swatches();resize();build(inp.value);
+</script>
+</body>
+</html>
